@@ -1,0 +1,7 @@
+models/license_plate_detection.pt
+models/yolov8n.pt
+__pycache__/
+myenv
+src/sort
+data/output/out.mp4
+data/input/sample.mp4
