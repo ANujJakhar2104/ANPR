@@ -1,0 +1,17 @@
+# backend
+backend/.env
+backend/data/
+backend/models/*.pt
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+venv/
+.venv/
+
+# frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+/backend/anpr-app
+/backend/app/anpr/sort
+.DS_Store

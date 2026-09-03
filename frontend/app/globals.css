@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background-color: #14161a;
+  color: #eceef1;
+}
+
+* {
+  border-color: #2a2e36;
+}
+
+::selection {
+  background-color: #f2b705;
+  color: #14161a;
+}
+
+/* Visible keyboard focus, kept consistent across the app */
+:focus-visible {
+  outline: 2px solid #f2b705;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
