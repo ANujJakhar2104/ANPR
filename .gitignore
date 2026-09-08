@@ -15,3 +15,5 @@ frontend/.env.local
 /backend/anpr-app
 /backend/app/anpr/sort
 .DS_Store
+
+backend/test.py

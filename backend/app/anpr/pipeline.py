@@ -1,3 +1,4 @@
+import ast
 import base64
 import csv
 import os
@@ -5,6 +6,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
 from ultralytics import YOLO
 
@@ -12,7 +14,7 @@ from app.anpr.sort.sort import Sort
 from app.anpr.util import get_car, read_license_plate, write_csv
 from app.config import settings
 
-VEHICLE_CLASSES = [2, 3, 5, 7]  # car, motorcycle, bus, truck (COCO ids) - same as original main.py
+VEHICLE_CLASSES = [2, 3, 5, 7]  # car, motorcycle, bus, truck (COCO IDs)
 
 _coco_model: Optional[YOLO] = None
 _plate_model: Optional[YOLO] = None
@@ -32,24 +34,19 @@ def _get_models() -> tuple[YOLO, YOLO]:
     return _coco_model, _plate_model
 
 
-## plate border maker
-
-def _draw_border(img, top_left, bottom_right, color=(0, 255, 0), thickness=10,
-                  line_length_x=200, line_length_y=200):
+def _draw_border(img, top_left, bottom_right, color=(0, 255, 0), thickness=8,
+                 line_length_x=80, line_length_y=80):
     x1, y1 = top_left
     x2, y2 = bottom_right
-    cv2.line(img, (x1, y1), (x1, y1 + line_length_y), color, thickness)
-    cv2.line(img, (x1, y1), (x1 + line_length_x, y1), color, thickness)
-    cv2.line(img, (x1, y2), (x1, y2 - line_length_y), color, thickness)
-    cv2.line(img, (x1, y2), (x1 + line_length_x, y2), color, thickness)
-    cv2.line(img, (x2, y1), (x2 - line_length_x, y1), color, thickness)
-    cv2.line(img, (x2, y1), (x2, y1 + line_length_y), color, thickness)
-    cv2.line(img, (x2, y2), (x2, y2 - line_length_y), color, thickness)
-    cv2.line(img, (x2, y2), (x2 - line_length_x, y2), color, thickness)
+    cv2.line(img, (x1, y1), (x1, min(y2, y1 + line_length_y)), color, thickness)
+    cv2.line(img, (x1, y1), (min(x2, x1 + line_length_x), y1), color, thickness)
+    cv2.line(img, (x1, y2), (x1, max(y1, y2 - line_length_y)), color, thickness)
+    cv2.line(img, (x1, y2), (min(x2, x1 + line_length_x), y2), color, thickness)
+    cv2.line(img, (x2, y1), (max(x1, x2 - line_length_x), y1), color, thickness)
+    cv2.line(img, (x2, y1), (x2, min(y2, y1 + line_length_y)), color, thickness)
+    cv2.line(img, (x2, y2), (max(x1, x2 - line_length_x), y2), color, thickness)
+    cv2.line(img, (x2, y2), (x2, max(y1, y2 - line_length_y)), color, thickness)
     return img
-
-
-# single frame image detector or only image detector
 
 
 def detect_image(image_path: str) -> tuple[list[dict], str]:
@@ -59,8 +56,10 @@ def detect_image(image_path: str) -> tuple[list[dict], str]:
     if frame is None:
         raise ValueError(f"Could not read image at {image_path}")
 
+    h_frame, w_frame, _ = frame.shape
     detections_out = []
 
+    # Detect Vehicles
     vehicle_detections = coco_model(frame)[0]
     vehicles_ = []
     for detection in vehicle_detections.boxes.data.tolist():
@@ -68,45 +67,58 @@ def detect_image(image_path: str) -> tuple[list[dict], str]:
         if int(class_id) in VEHICLE_CLASSES:
             vehicles_.append([x1, y1, x2, y2])
 
-    
     if len(vehicles_) > 0:
         vehicle_ids = np.array([[*box, idx] for idx, box in enumerate(vehicles_)])
     else:
         vehicle_ids = np.empty((0, 5))
 
+    # Detect Plates
     license_plates = plate_model(frame)[0]
+    dummy_car_id = 9999
 
     for license_plate in license_plates.boxes.data.tolist():
         x1, y1, x2, y2, score, class_id = license_plate
         xcar1, ycar1, xcar2, ycar2, car_id = get_car(license_plate, vehicle_ids)
 
-        if car_id != -1:
-            license_plate_crop = frame[int(y1):int(y2), int(x1):int(x2), :]
-            license_plate_crop_gray = cv2.cvtColor(license_plate_crop, cv2.COLOR_BGR2GRAY)
-            _, license_plate_crop_thresh = cv2.threshold(
-                license_plate_crop_gray, 64, 255, cv2.THRESH_BINARY_INV
-            )
-            license_plate_text, license_plate_text_score = read_license_plate(license_plate_crop_thresh)
+        # Fallback for vehicle-less closeups
+        if car_id == -1:
+            car_id = dummy_car_id
+            dummy_car_id += 1
+            xcar1, ycar1, xcar2, ycar2 = x1, y1, x2, y2
 
-            _draw_border(frame, (int(xcar1), int(ycar1)), (int(xcar2), int(ycar2)),
-                         (0, 255, 0), 8, line_length_x=80, line_length_y=80)
-            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 4)
+        # Crop validation
+        crop_y1 = max(0, int(y1))
+        crop_y2 = min(h_frame, int(y2))
+        crop_x1 = max(0, int(x1))
+        crop_x2 = min(w_frame, int(x2))
 
-            label = license_plate_text if license_plate_text else "UNREADABLE"
-            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
-            text_y = max(25, int(y1) - 10)
-            cv2.rectangle(frame, (int(x1) - 4, text_y - th - 6), (int(x1) + tw + 4, text_y + baseline + 4),
-                          (0, 0, 0), -1)
-            cv2.putText(frame, label, (int(x1), text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+        license_plate_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+        if license_plate_crop.size == 0:
+            continue
 
-            detections_out.append({
-                "car_id": int(car_id),
-                "car_bbox": [float(xcar1), float(ycar1), float(xcar2), float(ycar2)],
-                "license_plate_bbox": [float(x1), float(y1), float(x2), float(y2)],
-                "license_plate_bbox_score": float(score),
-                "license_number": license_plate_text,
-                "license_number_score": float(license_plate_text_score) if license_plate_text_score else None,
-            })
+        # PaddleOCR inference
+        license_plate_text, license_plate_text_score = read_license_plate(license_plate_crop)
+
+        # Visual overlay
+        _draw_border(frame, (int(xcar1), int(ycar1)), (int(xcar2), int(ycar2)),
+                     (0, 255, 0), 8, line_length_x=80, line_length_y=80)
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 4)
+
+        label = license_plate_text if license_plate_text else "UNREADABLE"
+        (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+        text_y = max(25, int(y1) - 10)
+        cv2.rectangle(frame, (int(x1) - 4, text_y - th - 6), (int(x1) + tw + 4, text_y + baseline + 4),
+                      (0, 0, 0), -1)
+        cv2.putText(frame, label, (int(x1), text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+
+        detections_out.append({
+            "car_id": int(car_id),
+            "car_bbox": [float(xcar1), float(ycar1), float(xcar2), float(ycar2)],
+            "license_plate_bbox": [float(x1), float(y1), float(x2), float(y2)],
+            "license_plate_bbox_score": float(score),
+            "license_number": license_plate_text,
+            "license_number_score": float(license_plate_text_score) if license_plate_text_score else None,
+        })
 
     ok, buf = cv2.imencode(".jpg", frame)
     if not ok:
@@ -115,7 +127,6 @@ def detect_image(image_path: str) -> tuple[list[dict], str]:
 
     return detections_out, annotated_b64
 
-#video mode and this one here works for all frames of a video
 
 def detect_video(video_path: str, csv_output_path: str) -> None:
     coco_model, plate_model = _get_models()
@@ -133,6 +144,7 @@ def detect_video(video_path: str, csv_output_path: str) -> None:
         frame_nmr += 1
         ret, frame = cap.read()
         if ret:
+            h_frame, w_frame, _ = frame.shape
             results[frame_nmr] = {}
             detections = coco_model(frame)[0]
             detections_ = []
@@ -147,35 +159,42 @@ def detect_video(video_path: str, csv_output_path: str) -> None:
                 track_ids = np.empty((0, 5))
 
             license_plates = plate_model(frame)[0]
+            dummy_car_id = 9000
 
             for license_plate in license_plates.boxes.data.tolist():
                 x1, y1, x2, y2, score, class_id = license_plate
                 xcar1, ycar1, xcar2, ycar2, car_id = get_car(license_plate, track_ids)
 
-                if car_id != -1:
-                    license_plate_crop = frame[int(y1):int(y2), int(x1):int(x2), :]
-                    license_plate_crop_gray = cv2.cvtColor(license_plate_crop, cv2.COLOR_BGR2GRAY)
-                    _, license_plate_crop_thresh = cv2.threshold(
-                        license_plate_crop_gray, 64, 255, cv2.THRESH_BINARY_INV
-                    )
-                    license_plate_text, license_plate_text_score = read_license_plate(license_plate_crop_thresh)
+                if car_id == -1:
+                    car_id = dummy_car_id
+                    dummy_car_id += 1
+                    xcar1, ycar1, xcar2, ycar2 = x1, y1, x2, y2
 
-                    if license_plate_text is not None:
-                        results[frame_nmr][car_id] = {
-                            'car': {'bbox': [xcar1, ycar1, xcar2, ycar2]},
-                            'license_plate': {
-                                'bbox': [x1, y1, x2, y2],
-                                'text': license_plate_text,
-                                'bbox_score': score,
-                                'text_score': license_plate_text_score,
-                            },
-                        }
+                crop_y1 = max(0, int(y1))
+                crop_y2 = min(h_frame, int(y2))
+                crop_x1 = max(0, int(x1))
+                crop_x2 = min(w_frame, int(x2))
+
+                license_plate_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+                if license_plate_crop.size == 0:
+                    continue
+
+                license_plate_text, license_plate_text_score = read_license_plate(license_plate_crop)
+
+                if license_plate_text is not None:
+                    results[frame_nmr][int(car_id)] = {
+                        'car': {'bbox': [xcar1, ycar1, xcar2, ycar2]},
+                        'license_plate': {
+                            'bbox': [x1, y1, x2, y2],
+                            'text': license_plate_text,
+                            'bbox_score': score,
+                            'text_score': license_plate_text_score,
+                        },
+                    }
 
     cap.release()
     write_csv(results, csv_output_path)
 
-
-# interpoation and render so there is no copy and a threshold for licence plate text
 
 def interpolate_bounding_boxes(data):
     frame_numbers = np.array([int(row['frame_nmr']) for row in data])
@@ -250,7 +269,6 @@ def interpolate_csv(csv_path: str, interpolated_csv_path: str) -> None:
         data = list(reader)
 
     if not data:
-        # Nothing detected in the whole video - write an empty file with headers
         header = ['frame_nmr', 'car_id', 'car_bbox', 'license_plate_bbox',
                   'license_plate_bbox_score', 'license_number', 'license_number_score']
         with open(interpolated_csv_path, 'w', newline='') as file:
@@ -268,15 +286,9 @@ def interpolate_csv(csv_path: str, interpolated_csv_path: str) -> None:
         writer.writerows(interpolated_data)
 
 
-# render video with interpolated boxes and text;
-
 def render_video(interpolated_csv_path: str, input_video_path: str, output_video_path: str) -> None:
-    import ast
-    import pandas as pd
-
     results = pd.read_csv(interpolated_csv_path)
     if results.empty:
-        # Nothing to draw - just copy the source video through untouched.
         cap = cv2.VideoCapture(input_video_path)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
@@ -294,7 +306,7 @@ def render_video(interpolated_csv_path: str, input_video_path: str, output_video
 
     cap = cv2.VideoCapture(input_video_path)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
@@ -335,8 +347,8 @@ def render_video(interpolated_csv_path: str, input_video_path: str, output_video
                 car_x2 = min(w_frame, int(car_coords[2]))
                 car_y2 = min(h_frame, int(car_coords[3]))
 
-                _draw_border(frame, (car_x1, car_y1), (car_x2, car_y2), (0, 255, 0), 15,
-                             line_length_x=150, line_length_y=150)
+                _draw_border(frame, (car_x1, car_y1), (car_x2, car_y2), (0, 255, 0), 12,
+                             line_length_x=120, line_length_y=120)
 
                 lp_coords = ast.literal_eval(
                     row['license_plate_bbox'].replace('[ ', '[').replace('   ', ' ').replace('  ', ' ').replace(' ', ',')
@@ -346,7 +358,7 @@ def render_video(interpolated_csv_path: str, input_video_path: str, output_video
                 x2 = min(w_frame, int(lp_coords[2]))
                 y2 = min(h_frame, int(lp_coords[3]))
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 6)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 4)
 
                 plate_text = license_plate_text_map.get(car_id_key, "UNKNOWN")
                 if plate_text not in ("0", "nan"):
@@ -355,7 +367,6 @@ def render_video(interpolated_csv_path: str, input_video_path: str, output_video
                     thickness = 2
 
                     (text_width, text_height), baseline = cv2.getTextSize(plate_text, font, font_scale, thickness)
-
                     text_x = x1
                     text_y = max(25, y1 - 10)
 
@@ -371,10 +382,8 @@ def render_video(interpolated_csv_path: str, input_video_path: str, output_video
     out.release()
     cap.release()
 
-# runs full pipeline on a video: detect -> interpolate -> render
 
 def run_full_video_pipeline(video_path: str, work_dir: str) -> dict:
-    
     os.makedirs(work_dir, exist_ok=True)
     csv_path = os.path.join(work_dir, "detections.csv")
     interpolated_csv_path = os.path.join(work_dir, "detections_interpolated.csv")
