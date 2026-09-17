@@ -1,0 +1,17 @@
+# backend
+backend/.env
+backend/data/
+backend/models/*.pt
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+venv/
+.venv/
+
+# frontend
+node_modules/
+.next/
+.env.local
+.DS_Store
+
+**/node_modules/

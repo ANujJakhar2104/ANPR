@@ -1,0 +1,29 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+SQLAlchemy==2.0.35
+pydantic[email]==2.9.2
+email-validator==2.2.0
+pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.9
+python-dotenv==1.0.1
+
+# ANPR pipeline (your existing stack)
+opencv-python-headless==4.10.0.84
+ultralytics==8.2.103
+easyocr==1.7.2
+numpy==1.26.4
+scipy==1.13.1
+filterpy==1.4.5
+
+# Alternate/experimental OCR engine you're evaluating alongside EasyOCR.
+# Heavy (~300-500MB of wheels) and pulls in its own transitive opencv-python -
+# see the Dockerfile note about forcing opencv-python-headless back on top.
+paddlepaddle==2.6.2
+paddleocr==2.8.1
+
+# Admin dashboard: system health metrics + CSV/HTML/PDF export
+psutil==6.0.0
+reportlab==4.2.2
